@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stickman Fighter Arena</title>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:Arial;}
+body{background:#111;overflow:hidden;}
+canvas{display:block;}
+
+#ui{
+position:absolute;top:10px;left:10px;color:white;
+z-index:10;
+}
+
+#controls{
+position:absolute;bottom:10px;left:10px;
+color:white;background:rgba(0,0,0,0.5);
+padding:10px;border-radius:10px;
+z-index:10;
+}
+</style>
+</head>
+
+<body>
+
+<div id="ui"><h2>Stickman Fighter Arena</h2></div>
+
+<div id="controls">
+A/D Move<br>
+W Jump<br>
+B Block<br>
+J Punch<br>
+K Kick<br>
+I Sword<br>
+O Laser<br>
+SPACE Start
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+
+// ================= CANVAS =================
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+function resize(){
+canvas.width=window.innerWidth;
+canvas.height=window.innerHeight;
+}
+window.addEventListener("resize",resize);
+resize();
+
+const gravity=0.8;
+
+// ================= STATE =================
+let gameState="intro";
+let ko=false;
+let shake=0;
+
+// ================= INPUT =================
+const keys={};
+
+document.addEventListener("keydown",e=>{
+keys[e.key.toLowerCase()]=true;
+if(e.key===" ") gameState="fight";
+});
+document.addEventListener("keyup",e=>{
+keys[e.key.toLowerCase()]=false;
+});
+
+// ================= SOUND SYSTEM =================
+const sounds={
+punch:new Audio("https://actions.google.com/sounds/v1/foley/punch.ogg"),
+kick:new Audio("https://actions.google.com/sounds/v1/foley/wood_plank_flicks.ogg"),
+hit:new Audio("https://actions.google.com/sounds/v1/impacts/crash.ogg"),
+sword:new Audio("https://actions.google.com/sounds/v1/foley/metal_clang.ogg"),
+laser:new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg"),
+jump:new Audio("https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg")
+};
+
+for(let s in sounds) sounds[s].volume=0.5;
+
+function playSound(name){
+if(sounds[name]){
+sounds[name].currentTime=0;
+sounds[name].play();
+}
+}
+
+// bg music (starts on click)
+const bgMusic=new Audio("https://cdn.pixabay.com/download/audio/2022/03/15/audio_3c6b8b2f1f.mp3");
+bgMusic.loop=true;
+bgMusic.volume=0.2;
+
+document.addEventListener("click",()=>{
+bgMusic.play();
+},{once:true});
+
+// ================= PARTICLES =================
+class Particle{
+constructor(x,y,c){
+this.x=x;this.y=y;
+this.vx=(Math.random()-0.5)*6;
+this.vy=(Math.random()-0.5)*6;
+this.life=25;
+this.color=c;
+}
+update(){this.x+=this.vx;this.y+=this.vy;this.life--;}
+draw(){ctx.fillStyle=this.color;ctx.fillRect(this.x,this.y,3,3);}
+}
+
+let particles=[];
+function hitEffect(x,y,c){
+for(let i=0;i<10;i++)particles.push(new Particle(x,y,c));
+}
+
+// ================= FIGHTER =================
+class Fighter{
+constructor(x,color){
+this.x=x;
+this.y=0;
+this.vx=0;
+this.vy=0;
+this.w=50;
+this.h=120;
+this.color=color;
+
+this.health=100;
+this.cooldown=0;
+
+this.attack=false;
+this.sword=false;
+this.block=false;
+
+this.facing=1;
+this.onGround=false;
+
+this.walk=0;
+}
+
+draw(){
+
+let cx=this.x+25;
+let cy=this.y+35;
+
+// shadow
+ctx.fillStyle="rgba(0,0,0,0.4)";
+ctx.beginPath();
+ctx.ellipse(cx,canvas.height-55,30,10,0,0,Math.PI*2);
+ctx.fill();
+
+// stickman
+ctx.strokeStyle=this.color;
+ctx.lineWidth=6;
+
+// head
+ctx.beginPath();
+ctx.arc(cx,cy,18,0,Math.PI*2);
+ctx.stroke();
+
+// body
+ctx.beginPath();
+ctx.moveTo(cx,cy+18);
+ctx.lineTo(cx,cy+70);
+ctx.stroke();
+
+// arms
+ctx.beginPath();
+ctx.moveTo(cx,cy+40);
+ctx.lineTo(cx-20,cy+55);
+ctx.moveTo(cx,cy+40);
+ctx.lineTo(cx+20,cy+55);
+ctx.stroke();
+
+// legs
+let s=Math.sin(this.walk)*12;
+
+ctx.beginPath();
+ctx.moveTo(cx,cy+70);
+ctx.lineTo(cx-20+s,cy+110);
+ctx.moveTo(cx,cy+70);
+ctx.lineTo(cx+20-s,cy+110);
+ctx.stroke();
+
+// sword
+if(this.sword){
+ctx.strokeStyle="white";
+ctx.lineWidth=4;
+ctx.beginPath();
+ctx.moveTo(this.x+25,this.y+55);
+ctx.lineTo(this.x+this.facing*80,this.y+30);
+ctx.stroke();
+}
+
+// block
+if(this.block){
+ctx.strokeStyle="cyan";
+ctx.strokeRect(this.x,this.y,this.w,this.h);
+}
+
+// attack flash
+if(this.attack){
+ctx.fillStyle="yellow";
+ctx.fillRect(this.x+this.facing*40,this.y+25,35,25);
+}
+}
+
+update(){
+
+this.x+=this.vx;
+this.y+=this.vy;
+
+this.vy+=gravity;
+
+this.onGround=false;
+
+if(this.y+this.h>=canvas.height-60){
+this.y=canvas.height-60-this.h;
+this.vy=0;
+this.onGround=true;
+}
+
+this.walk+=Math.abs(this.vx)*0.2;
+
+if(this.cooldown>0) this.cooldown--;
+
+this.draw();
+}
+
+hit(d){
+
+if(this.block){
+this.health-=d*0.3;
+shake=6;
+playSound("hit");
+hitEffect(this.x,this.y,"cyan");
+return;
+}
+
+this.health-=d;
+if(this.health<0)this.health=0;
+
+this.vx+=this.facing*-3;
+
+shake=10;
+playSound("hit");
+hitEffect(this.x,this.y,"red");
+}
+}
+
+// ================= ENTITIES =================
+const player=new Fighter(200,"cyan");
+const enemy=new Fighter(700,"orange");
+
+// ================= ARENA =================
+function drawArena(){
+
+// sky
+let sky=ctx.createLinearGradient(0,0,0,canvas.height);
+sky.addColorStop(0,"#0b1020");
+sky.addColorStop(1,"#1a1a1a");
+ctx.fillStyle=sky;
+ctx.fillRect(0,0,canvas.width,canvas.height);
+
+// mountains
+ctx.fillStyle="#0b1220";
+for(let i=0;i<7;i++){
+ctx.beginPath();
+ctx.moveTo(i*250,canvas.height-120);
+ctx.lineTo(i*250+120,canvas.height-280);
+ctx.lineTo(i*250+240,canvas.height-120);
+ctx.fill();
+}
+
+// ground shadow
+ctx.fillStyle="rgba(0,0,0,0.3)";
+ctx.fillRect(0,canvas.height-100,canvas.width,100);
+
+// ground
+ctx.fillStyle="#2b2b2b";
+ctx.fillRect(0,canvas.height-60,canvas.width,60);
+
+// line
+ctx.strokeStyle="rgba(255,255,255,0.15)";
+ctx.beginPath();
+ctx.moveTo(0,canvas.height-60);
+ctx.lineTo(canvas.width,canvas.height-60);
+ctx.stroke();
+}
+
+// ================= INPUT =================
+function input(){
+
+player.vx=0;
+
+if(keys["a"]) player.vx=-5;
+if(keys["d"]) player.vx=5;
+
+player.facing=(player.x<enemy.x)?1:-1;
+
+if(keys["w"] && player.onGround){
+player.vy=-15;
+playSound("jump");
+}
+
+player.block=keys["b"];
+
+if(keys["j"] && player.cooldown===0) attack(player,enemy,10,"punch");
+if(keys["k"] && player.cooldown===0) attack(player,enemy,15,"kick");
+if(keys["i"] && player.cooldown===0) sword(player,enemy);
+if(keys["o"] && player.cooldown===0) laser(player,enemy);
+}
+
+// ================= BASIC ATTACK =================
+function attack(a,t,d,sound){
+
+a.attack=true;
+a.cooldown=20;
+
+setTimeout(()=>a.attack=false,100);
+
+if(Math.abs(a.x-t.x)<80){
+t.hit(d);
+hitEffect(t.x,t.y,"orange");
+shake=8;
+playSound(sound);
+}
+}
+
+// ================= SWORD =================
+function sword(a,t){
+
+a.attack=true;
+a.sword=true;
+a.cooldown=35;
+
+setTimeout(()=>{
+a.attack=false;
+a.sword=false;
+},150);
+
+if(Math.abs(a.x-t.x)<120){
+t.hit(25);
+hitEffect(t.x,t.y,"white");
+shake=12;
+playSound("sword");
+}
+}
+
+// ================= LASER =================
+function laser(a,t){
+
+a.cooldown=50;
+
+if(Math.abs(a.x-t.x)<300){
+t.hit(30);
+hitEffect(t.x,t.y,"cyan");
+shake=10;
+playSound("laser");
+}
+}
+
+// ================= AI =================
+function ai(){
+
+enemy.vx=0;
+enemy.facing=(enemy.x<player.x)?1:-1;
+
+if(enemy.x>player.x+70) enemy.vx=-3;
+else if(enemy.x<player.x-70) enemy.vx=3;
+
+if(Math.abs(enemy.x-player.x)<80 && enemy.cooldown===0){
+enemy.cooldown=40;
+
+setTimeout(()=>{
+if(!player.block) player.hit(8);
+},120);
+
+playSound("punch");
+}
+}
+
+// ================= HUD =================
+function drawHUD(){
+
+ctx.setTransform(1,0,0,1,0,0);
+
+ctx.fillStyle="rgba(0,255,0,0.4)";
+ctx.fillRect(40,40,player.health*3,20);
+
+ctx.fillStyle="rgba(255,0,0,0.4)";
+ctx.fillRect(canvas.width-340,40,enemy.health*3,20);
+}
+
+// ================= KO =================
+function checkKO(){
+
+if(player.health<=0 || enemy.health<=0){
+ko=true;
+setTimeout(()=>alert("K.O!"),500);
+}
+}
+
+// ================= LOOP =================
+function loop(){
+
+ctx.setTransform(1,0,0,1,0,0);
+
+if(shake>0){
+ctx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+shake*=0.9;
+}
+
+if(gameState==="intro"){
+ctx.fillStyle="black";
+ctx.fillRect(0,0,canvas.width,canvas.height);
+
+ctx.fillStyle="white";
+ctx.font="60px Arial";
+ctx.textAlign="center";
+ctx.fillText("STICKMAN ARENA",canvas.width/2,200);
+
+ctx.font="30px Arial";
+ctx.fillText("Press SPACE",canvas.width/2,400);
+
+requestAnimationFrame(loop);
+return;
+}
+
+drawArena();
+
+input();
+ai();
+
+player.update();
+enemy.update();
+
+checkKO();
+
+drawHUD();
+
+if(ko){
+ctx.fillStyle="rgba(0,0,0,0.7)";
+ctx.fillRect(0,0,canvas.width,canvas.height);
+
+ctx.fillStyle="white";
+ctx.font="80px Arial";
+ctx.textAlign="center";
+ctx.fillText("K.O.",canvas.width/2,canvas.height/2);
+return;
+}
+
+requestAnimationFrame(loop);
+}
+
+loop();
+
+</script>
+</body>
+</html>
